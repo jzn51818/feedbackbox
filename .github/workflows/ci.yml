@@ -9,6 +9,8 @@ on:
 
 env:
   NODE_VERSION: "20"
+  DATABASE_URL: "postgresql://fake:fake@localhost:5432/fake"
+  REDIS_URL: "redis://localhost:6379"
 
 jobs:
   build-and-lint:
@@ -39,6 +41,3 @@ jobs:
 
       - name: Build
         run: npm run build
-        env:
-          DATABASE_URL: "postgresql://fake:fake@localhost:5432/fake"
-          REDIS_URL: "redis://localhost:6379"
