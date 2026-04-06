@@ -1,0 +1,36 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Category {
+  BUG
+  FEATURE
+  GENERAL
+  OTHER
+}
+
+enum Status {
+  NEW
+  REVIEWED
+  RESOLVED
+}
+
+model Feedback {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  message   String
+  category  Category @default(GENERAL)
+  status    Status   @default(NEW)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([category])
+  @@index([status])
+  @@map("feedback")
+}
