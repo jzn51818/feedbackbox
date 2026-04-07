@@ -40,6 +40,7 @@ RUN npx prisma generate
 # These are build-time only; runtime values come from ECS task definition
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
 
 # Build Next.js
 RUN npm run build

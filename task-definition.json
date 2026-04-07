@@ -25,7 +25,7 @@
         },
         {
           "name": "DATABASE_URL",
-          "value": "postgresql://fbadmin:JhZfbJzn18@feedbackbox-db.cgj4am6wgp8d.us-east-1.rds.amazonaws.com:5432/feedbackbox"
+          "value": "postgresql://fbadmin:JhZfbJzn18@feedbackbox-db.cgj4am6wgp8d.us-east-1.rds.amazonaws.com:5432/feedbackbox?sslmode=require"
         },
         {
           "name": "REDIS_URL",
