@@ -68,12 +68,9 @@ export async function GET() {
 
   try {
     // Try Redis cache first
-    let cacheHit = false;
-
     try {
       const cached = await redis.get(CACHE_KEYS.ALL_FEEDBACK);
       if (cached) {
-        cacheHit = true;
         log.info("Cache hit");
         const data = JSON.parse(cached);
         return NextResponse.json(

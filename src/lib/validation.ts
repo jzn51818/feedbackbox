@@ -20,7 +20,7 @@ export const feedbackSchema = z.object({
     .max(5000, "Message must be 5000 characters or less")
     .trim(),
   category: z.enum(["BUG", "FEATURE", "GENERAL", "OTHER"], {
-    errorMap: () => ({ message: "Please select a valid category" }),
+    message: "Please select a valid category",
   }),
 });
 
