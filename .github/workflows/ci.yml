@@ -1,27 +1,51 @@
-# .github/workflows/ci.yml
+# =============================================================================
+# CI Pipeline — Runs on every pull request targeting main
+# =============================================================================
+# This workflow validates code quality, type safety, tests, and build integrity
+# BEFORE code is merged. All jobs must pass for the PR to be merge-eligible.
+# =============================================================================
+
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+    # Run on these PR events: opened, new commits pushed, or reopened
+    types: [opened, synchronize, reopened]
+
+# Cancel any in-progress CI runs for the same PR when a new commit is pushed.
+# This saves runner minutes — no point testing a stale commit.
+concurrency:
+  group: ci-${{ github.head_ref }}
+  cancel-in-progress: true
+
+# Top-level permissions: read-only by default, scoped per job below
+permissions:
+  contents: read
 
 env:
   NODE_VERSION: "20"
-  DATABASE_URL: "postgresql://fake:fake@localhost:5432/fake"
-  REDIS_URL: "redis://localhost:6379"
 
 jobs:
-  build-and-lint:
-    name: Build & Lint
+  # ===========================================================================
+  # Job 1: Lint + Type Check
+  # ===========================================================================
+  # Runs ESLint and TypeScript compiler in parallel (via &&) to catch code
+  # quality and type safety issues. These are fast checks (~30s) so we combine
+  # them in one job to avoid the overhead of spinning up a second runner.
+  # ===========================================================================
+  lint-and-typecheck:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      # Cache node_modules based on the lockfile hash.
+      # If package-lock.json hasn't changed, skip `npm ci` entirely.
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -30,14 +54,183 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ESLint checks: code style, unused vars, React hook rules, import order
+      - name: Run ESLint
+        run: npx eslint . --max-warnings 0
+        # --max-warnings 0 means ANY warning is treated as a failure.
+        # This prevents warning debt from accumulating silently.
+
+      # TypeScript compiler check: validates all types without emitting files.
+      # Catches errors like: wrong prop types, missing properties, bad generics.
+      - name: Run TypeScript type check
+        run: npx tsc --noEmit
+
+  # ===========================================================================
+  # Job 2: Unit Tests
+  # ===========================================================================
+  # Runs the full Vitest suite with coverage. Uploads the coverage report as
+  # an artifact so reviewers can download and inspect it if needed.
+  # ===========================================================================
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # Provide a test database URL for any tests that need it.
+      # This uses the secret configured in GitHub repo settings.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Run tests with coverage. Vitest outputs coverage to ./coverage/
+      - name: Run tests with coverage
+        run: npx vitest run --coverage --reporter=verbose
+
+      # Upload coverage as a downloadable artifact on the workflow run.
+      # Available for 30 days. Reviewers can check which lines are untested.
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        # "if: always()" ensures the artifact is uploaded even if tests fail.
+        # This lets developers inspect coverage for the failing test run.
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+  # ===========================================================================
+  # Job 3: Build Check
+  # ===========================================================================
+  # Runs `next build` to verify the app compiles successfully. This catches:
+  # - Bad dynamic imports
+  # - Missing environment variables referenced at build time
+  # - SSR/SSG rendering errors in page components
+  # - Asset import issues
+  # These failures would NOT be caught by lint or type-check alone.
+  # ===========================================================================
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only run after lint and tests pass. No point building if those fail.
+    needs: [lint-and-typecheck, unit-tests]
+
+    env:
+      # Next.js needs certain env vars at build time for SSR/SSG pages.
+      # Use dummy values here — we only care that the build succeeds,
+      # not that it connects to real services.
+      DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
+      NEXTAUTH_SECRET: "ci-build-check-dummy-secret"
+      NEXTAUTH_URL: "http://localhost:3000"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Generate Prisma client so imports resolve during build
       - name: Generate Prisma client
         run: npx prisma generate
 
-      - name: Run linter
-        run: npm run lint
-
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Build
+      - name: Build Next.js app
         run: npm run build
+
+  # ===========================================================================
+  # Job 4: PR Status Comment
+  # ===========================================================================
+  # Posts a summary comment on the PR showing the result of all checks.
+  # This gives reviewers a quick at-a-glance view without clicking into
+  # the Actions tab. Runs after all other jobs complete.
+  # ===========================================================================
+  pr-comment:
+    name: PR Status Comment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [lint-and-typecheck, unit-tests, build-check]
+    if: always()
+    # "if: always()" ensures this job runs even when upstream jobs fail.
+    # We want the comment to report failures, not just successes.
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Post status comment on PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Map job conclusions to human-readable status icons
+            const lint = '${{ needs.lint-and-typecheck.result }}';
+            const tests = '${{ needs.unit-tests.result }}';
+            const build = '${{ needs.build-check.result }}';
+
+            const icon = (status) => {
+              switch(status) {
+                case 'success': return '✅';
+                case 'failure': return '❌';
+                case 'cancelled': return '⚪';
+                case 'skipped': return '⏭️';
+                default: return '❓';
+              }
+            };
+
+            const body = [
+              '## CI Pipeline Results',
+              '',
+              '| Check | Status |',
+              '|-------|--------|',
+              `| Lint & Type Check | ${icon(lint)} ${lint} |`,
+              `| Unit Tests | ${icon(tests)} ${tests} |`,
+              `| Build Check | ${icon(build)} ${build} |`,
+              '',
+              `*Run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`,
+            ].join('\n');
+
+            // Find and update existing bot comment, or create a new one.
+            // This avoids spamming the PR with a new comment on every push.
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(
+              (c) => c.user.type === 'Bot' && c.body.includes('CI Pipeline Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

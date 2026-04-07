@@ -1,0 +1,113 @@
+# =============================================================================
+# Dependabot Configuration
+# =============================================================================
+# Dependabot automatically opens PRs to update outdated dependencies.
+# This covers two ecosystems:
+#   1. npm — your application dependencies (React, Next.js, Prisma, etc.)
+#   2. github-actions — the Actions used in your workflows (checkout, setup-node)
+#
+# Keeping dependencies updated is important for:
+#   - Security patches (CVEs in transitive dependencies)
+#   - Bug fixes in libraries you depend on
+#   - Not falling so far behind that a major upgrade becomes painful
+# =============================================================================
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # npm dependencies (package.json / package-lock.json)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+
+    # Limit to 10 PRs per week to avoid overwhelming the team.
+    # Dependabot prioritizes security updates over version updates.
+    open-pull-requests-limit: 10
+
+    # Group related updates into a single PR to reduce noise.
+    # Instead of 5 separate PRs for 5 eslint packages, you get one PR.
+    groups:
+      # Group all ESLint-related packages together
+      eslint:
+        patterns:
+          - "eslint*"
+          - "@typescript-eslint/*"
+
+      # Group all testing packages together
+      testing:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "@testing-library/*"
+          - "jsdom"
+
+      # Group all Next.js and React packages together
+      next-and-react:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "@next/*"
+          - "@types/react*"
+
+      # Group Prisma packages (client + CLI must stay in sync)
+      prisma:
+        patterns:
+          - "prisma"
+          - "@prisma/*"
+
+      # Group all AWS SDK packages
+      aws:
+        patterns:
+          - "@aws-sdk/*"
+
+      # Group all Tailwind packages
+      tailwind:
+        patterns:
+          - "tailwindcss"
+          - "@tailwindcss/*"
+          - "postcss"
+          - "autoprefixer"
+
+    # Auto-assign reviewers to dependency update PRs
+    reviewers:
+      - "your-github-username"
+
+    # Add labels so you can filter Dependabot PRs in your PR list
+    labels:
+      - "dependencies"
+      - "automated"
+
+    # Commit message configuration
+    commit-message:
+      prefix: "deps"
+      # Results in: "deps: bump next from 14.1.0 to 14.2.0"
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions dependencies (workflow YAML files)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+
+    # Actions updates are less frequent, 5 PRs is plenty
+    open-pull-requests-limit: 5
+
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "automated"
+
+    commit-message:
+      prefix: "ci"
+      # Results in: "ci: bump actions/checkout from v3 to v4"

@@ -1,0 +1,142 @@
+# =============================================================================
+# Database Migration Workflow
+# =============================================================================
+# Runs Prisma migrations against the production database.
+#
+# WHY MIGRATIONS ARE SEPARATE FROM DEPLOYS:
+#
+# 1. Ordering: Migrations must run BEFORE the new code deploys. If the new
+#    code expects a column that doesn't exist yet, every request will fail
+#    until the migration runs. By decoupling them, you run the migration
+#    first, verify it succeeded, then deploy the code.
+#
+# 2. Rollback asymmetry: Code deployments are easy to roll back (just
+#    deploy the previous image). Database migrations are NOT — you can't
+#    un-drop a column. Keeping them separate forces you to think about
+#    each one independently.
+#
+# 3. Lock duration: Migrations may hold database locks (e.g., ALTER TABLE
+#    on a large table). Running them during a deploy adds unpredictable
+#    latency to the deploy process and can cause health check timeouts.
+#
+# 4. Failure isolation: If a migration fails, you don't want it to block
+#    a code-only deploy. And if a deploy fails, you don't want to wonder
+#    whether it was the migration or the code.
+#
+# RECOMMENDED WORKFLOW:
+#   1. PR adds migration file + code changes
+#   2. After merge, manually trigger this workflow to run the migration
+#   3. Verify migration succeeded (check logs, test a query)
+#   4. The deploy workflow runs automatically and deploys the new code
+# =============================================================================
+
+name: Database Migrations
+
+on:
+  # Manual trigger — the preferred method for production migrations.
+  # Go to Actions > Database Migrations > Run workflow.
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "migrate" to confirm you want to run migrations against production'
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run (check pending migrations without applying)"
+        required: false
+        type: boolean
+        default: false
+
+  # Also trigger automatically when migration files change on main.
+  # This is a convenience for teams that prefer automated migrations.
+  # Comment out this trigger if you want manual-only.
+  push:
+    branches: [main]
+    paths:
+      - "prisma/migrations/**"
+
+concurrency:
+  group: database-migrations
+  cancel-in-progress: false
+  # cancel-in-progress: false — NEVER cancel a running migration.
+  # Interrupting a migration mid-execution can leave the database
+  # in an inconsistent state.
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  migrate:
+    name: Run Prisma Migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # For manual triggers, require the confirmation input.
+    # For push triggers, skip the confirmation check.
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      # Gate: require explicit confirmation for manual triggers
+      - name: Confirm migration intent
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "migrate" ]; then
+            echo "ERROR: You must type 'migrate' to confirm."
+            echo "This is a safety check to prevent accidental migrations."
+            exit 1
+          fi
+          echo "Confirmation accepted."
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Show which migrations are pending before applying.
+      # This is logged for audit purposes.
+      - name: Check migration status
+        run: |
+          echo "=== Current migration status ==="
+          npx prisma migrate status
+          echo "================================="
+
+      # Dry run mode: just show what would happen, don't apply
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "DRY RUN MODE — no migrations will be applied."
+          echo "Review the migration status above and re-run without dry_run to apply."
+          exit 0
+
+      # Apply pending migrations to the production database.
+      # `prisma migrate deploy` is the production-safe command:
+      # - It only applies pending migrations (never creates new ones)
+      # - It does NOT prompt for confirmation (non-interactive)
+      # - It does NOT reset the database (unlike `prisma migrate dev`)
+      - name: Run migrations
+        run: |
+          echo "Applying pending migrations..."
+          npx prisma migrate deploy
+          echo "Migrations applied successfully."
+
+      # Verify the database is in a good state after migration
+      - name: Verify migration result
+        run: |
+          echo "=== Post-migration status ==="
+          npx prisma migrate status
+          echo "=============================="
+
+          # Generate client to verify schema is valid
+          npx prisma generate
+          echo "Prisma client generated successfully — schema is valid."

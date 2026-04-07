@@ -1,0 +1,322 @@
+# =============================================================================
+# CD Pipeline — Deploy to Production (AWS ECS Fargate)
+# =============================================================================
+# Triggered on every push to main (i.e., after a PR is merged).
+# Flow: Test → Build & Push Docker Image → Deploy to ECS → Smoke Test
+# =============================================================================
+
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+# Only one deploy at a time. If a new commit is pushed while deploying,
+# the old deploy is cancelled. This prevents race conditions where two
+# deploys try to update the same ECS service simultaneously.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  # ===========================================================================
+  # Job 1: Test
+  # ===========================================================================
+  # Re-run the full test suite even though CI ran on the PR. Why?
+  # 1. The PR branch may have been behind main (merge conflicts resolved)
+  # 2. Two PRs merged close together could interact badly
+  # 3. Defense in depth — never deploy untested code
+  # ===========================================================================
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npx eslint . --max-warnings 0
+
+      - name: Run TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npx vitest run --reporter=verbose
+
+  # ===========================================================================
+  # Job 2: Build & Push Docker Image to ECR
+  # ===========================================================================
+  # Builds a production Docker image and pushes it to Amazon ECR.
+  # The image is tagged with the git commit SHA for traceability —
+  # you can always map a running container back to the exact commit.
+  # ===========================================================================
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test]
+
+    # Output the image URI so the deploy job knows what to deploy
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Configure AWS credentials from GitHub secrets.
+      # This sets up the AWS CLI and SDK for subsequent steps.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Login to ECR. This generates a temporary Docker login token.
+      # The token is valid for 12 hours but we only need it for this job.
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build and push the Docker image.
+      # Tags:
+      #   - <sha>: Immutable tag tied to this exact commit
+      #   - latest: Convenience tag pointing to the most recent build
+      - name: Build, tag, and push Docker image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Build the Docker image using the production Dockerfile
+          docker build \
+            --build-arg NEXT_PUBLIC_APP_URL=https://feedbackbox.example.com \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            .
+
+          # Push both tags to ECR
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          # Output the full image URI for the deploy job
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  # ===========================================================================
+  # Job 3: Deploy to ECS Fargate
+  # ===========================================================================
+  # Updates the ECS task definition to point to the new image, then updates
+  # the ECS service to trigger a rolling deployment. ECS will:
+  # 1. Start new tasks with the new image
+  # 2. Wait for them to pass health checks
+  # 3. Drain connections from old tasks
+  # 4. Stop old tasks
+  # ===========================================================================
+  deploy:
+    name: Deploy to ECS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build-and-push]
+
+    # Output the deployed image for the smoke test job's logs
+    outputs:
+      image: ${{ needs.build-and-push.outputs.image }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Fetch the CURRENT task definition from ECS.
+      # We modify it rather than maintaining a separate JSON file because:
+      # 1. ECS adds fields we don't control (like compatibilities, status)
+      # 2. The task def may have been updated out-of-band (e.g., env var change)
+      # 3. We only want to change the image — everything else stays the same
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ secrets.ECS_TASK_DEFINITION }} \
+            --query 'taskDefinition' \
+            --output json > task-definition.json
+
+          # Remove fields that cannot be included when registering a new revision.
+          # These are read-only metadata fields that ECS adds automatically.
+          # Without this cleanup, register-task-definition will reject the input.
+          cat task-definition.json | jq '
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+          ' > clean-task-definition.json
+
+      # Update the container image in the task definition.
+      # This modifies the first container definition to use the new image.
+      # If you have sidecar containers, they are left unchanged.
+      - name: Update task definition with new image
+        run: |
+          NEW_IMAGE="${{ needs.build-and-push.outputs.image }}"
+          echo "Updating container image to: $NEW_IMAGE"
+
+          cat clean-task-definition.json | jq \
+            --arg IMAGE "$NEW_IMAGE" \
+            '.containerDefinitions[0].image = $IMAGE' \
+            > updated-task-definition.json
+
+      # Register the new task definition revision with ECS.
+      # This does NOT deploy it yet — it just creates a new revision number.
+      - name: Register new task definition
+        id: register-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://updated-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "Registered new task definition: $TASK_DEF_ARN"
+          echo "task-definition-arn=$TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      # Update the ECS service to use the new task definition.
+      # This triggers a rolling deployment managed by ECS.
+      - name: Deploy new task definition to ECS service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --service ${{ secrets.ECS_SERVICE }} \
+            --task-definition ${{ steps.register-task-def.outputs.task-definition-arn }} \
+            --force-new-deployment
+
+          echo "Deployment initiated. Waiting for service to stabilize..."
+
+      # Wait for the deployment to complete. This blocks until:
+      # - New tasks are running and healthy, OR
+      # - The deployment fails (timeout after 10 minutes)
+      # If it fails, ECS will automatically stop the rollout and keep
+      # the old tasks running (circuit breaker behavior).
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --services ${{ secrets.ECS_SERVICE }}
+
+          echo "Service is stable. Deployment complete."
+
+  # ===========================================================================
+  # Job 4: Smoke Test
+  # ===========================================================================
+  # After deployment stabilizes, hit the health endpoint through the load
+  # balancer to verify the new version is actually serving traffic correctly.
+  # This catches issues that ECS health checks might miss:
+  # - ALB routing misconfiguration
+  # - DNS propagation issues
+  # - Application-level errors that don't crash the container
+  # ===========================================================================
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy]
+
+    steps:
+      # Wait a brief moment for ALB target registration to fully propagate.
+      # ECS reports "stable" when tasks are healthy, but the ALB may still
+      # be draining connections from old targets.
+      - name: Wait for ALB propagation
+        run: sleep 15
+
+      # Hit the health endpoint. Retry up to 5 times with 10s between attempts.
+      # This accounts for any brief period where the ALB is swapping targets.
+      - name: Check health endpoint
+        run: |
+          HEALTH_URL="${{ secrets.PRODUCTION_URL }}/api/health"
+          echo "Checking health at: $HEALTH_URL"
+
+          MAX_RETRIES=5
+          RETRY_DELAY=10
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES..."
+
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              "$HEALTH_URL")
+
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Health check passed (HTTP $HTTP_STATUS)"
+              exit 0
+            fi
+
+            echo "Health check returned HTTP $HTTP_STATUS"
+
+            if [ "$i" -lt "$MAX_RETRIES" ]; then
+              echo "Retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+            fi
+          done
+
+          echo "========================================"
+          echo "SMOKE TEST FAILED after $MAX_RETRIES attempts"
+          echo "========================================"
+          echo ""
+          echo "The deployment completed but the health endpoint is not responding."
+          echo "Manual intervention required:"
+          echo ""
+          echo "  1. Check application logs:"
+          echo "     aws ecs list-tasks --cluster ${{ secrets.ECS_CLUSTER }} --service ${{ secrets.ECS_SERVICE }}"
+          echo "     aws logs tail /ecs/feedbackbox --since 10m"
+          echo ""
+          echo "  2. To rollback, re-run the previous successful deploy workflow,"
+          echo "     or manually update the service to the previous task definition:"
+          echo "     aws ecs update-service --cluster ${{ secrets.ECS_CLUSTER }} \\"
+          echo "       --service ${{ secrets.ECS_SERVICE }} \\"
+          echo "       --task-definition <previous-task-def-arn>"
+          echo ""
+          exit 1
+
+      # Verify the response body contains expected data (not just a 200)
+      - name: Verify health response body
+        run: |
+          HEALTH_URL="${{ secrets.PRODUCTION_URL }}/api/health"
+
+          RESPONSE=$(curl -s --max-time 10 "$HEALTH_URL")
+          echo "Health response: $RESPONSE"
+
+          # Check that the response contains a "status" field with "ok"
+          echo "$RESPONSE" | jq -e '.status == "ok"' > /dev/null 2>&1
+
+          if [ $? -eq 0 ]; then
+            echo "Health response body verified: status is 'ok'"
+          else
+            echo "WARNING: Health endpoint returned 200 but unexpected body"
+            echo "Response was: $RESPONSE"
+            exit 1
+          fi
