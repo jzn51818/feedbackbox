@@ -14,10 +14,10 @@ export default function Navbar() {
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2">
             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-sm">FB</span>
+              <span className="text-white font-bold text-sm">P</span>
             </div>
             <span className="text-xl font-bold text-gray-900">
-              FeedbackBox
+              Palona Support
             </span>
           </Link>
 
@@ -31,7 +31,7 @@ export default function Navbar() {
                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
               }`}
             >
-              Submit Feedback
+              Submit Request
             </Link>
             <Link
               href="/admin"

@@ -33,8 +33,8 @@ const CATEGORY_STYLES: Record<string, string> = {
 
 const CATEGORY_LABELS: Record<string, string> = {
   BUG: "Bug",
-  FEATURE: "Feature",
-  GENERAL: "General",
+  FEATURE: "New Feature",
+  GENERAL: "Feedback",
   OTHER: "Other",
 };
 
@@ -167,7 +167,7 @@ export default function AdminPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">
-            Feedback Dashboard
+            Request Dashboard
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {feedbackList.length} submission

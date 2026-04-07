@@ -14,10 +14,8 @@ interface FormErrors {
 
 const CATEGORIES = [
   { value: "", label: "Select a category..." },
-  { value: "BUG", label: "Bug Report" },
-  { value: "FEATURE", label: "Feature Request" },
+  { value: "FEATURE", label: "New Feature Request" },
   { value: "GENERAL", label: "General Feedback" },
-  { value: "OTHER", label: "Other" },
 ] as const;
 
 export default function HomePage() {
@@ -59,7 +57,7 @@ export default function HomePage() {
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setServerError("");
 
@@ -104,10 +102,10 @@ export default function HomePage() {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            Share Your Feedback
+            How can we help you today?
           </h1>
           <p className="text-gray-600">
-            Help us improve. Report a bug, suggest a feature, or just say hi.
+            Request new service. Share your feedback.
           </p>
         </div>
 
@@ -301,14 +299,14 @@ export default function HomePage() {
                 Submitting...
               </span>
             ) : (
-              "Submit Feedback"
+              "Submit"
             )}
           </button>
         </form>
 
         {/* Footer */}
         <p className="text-center text-xs text-gray-400 mt-6">
-          Your feedback is stored securely and reviewed by our team.
+          Your request is stored securely and reviewed by our team.
         </p>
       </div>
     </div>
