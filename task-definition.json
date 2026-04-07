@@ -1,0 +1,60 @@
+{
+  "family": "feedbackbox-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::896784231166:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::896784231166:role/feedbackbox-task-role",
+  "containerDefinitions": [
+    {
+      "name": "feedbackbox",
+      "image": "896784231166.dkr.ecr.us-east-1.amazonaws.com/feedbackbox:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "hostPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "DATABASE_URL",
+          "value": "postgresql://fbadmin:JhZfbJzn18@feedbackbox-db.cgj4am6wgp8d.us-east-1.rds.amazonaws.com:5432/feedbackbox"
+        },
+        {
+          "name": "REDIS_URL",
+          "value": "redis://:6379"
+        },
+        {
+          "name": "NEXTAUTH_URL",
+          "value": "http://feedbackbox-alb-1539393795.us-east-1.elb.amazonaws.com"
+        },
+        {
+          "name": "NEXTAUTH_SECRET",
+          "value": "bw2f/4ADXaLvBNg+NVPJIwCGhsU5aj6G5X5Oln+caio="
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/feedbackbox",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:3000/ || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

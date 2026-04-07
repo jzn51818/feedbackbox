@@ -1,0 +1,36 @@
+# Dependencies
+node_modules
+
+# Next.js build output
+.next
+
+# Environment files (NEVER bake secrets into images)
+.env
+.env.local
+.env.development
+.env.production
+
+# Version control
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage
+.jest
+
+# Documentation
+*.md
+LICENSE
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore

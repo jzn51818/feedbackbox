@@ -1,7 +1,7 @@
 // src/app/api/feedback/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { redis, CACHE_KEYS, CACHE_TTL } from "@/lib/redis";
+import { cache, CACHE_KEYS, CACHE_TTL } from "@/lib/redis";
 import { feedbackSchema } from "@/lib/validation";
 import { logger } from "@/lib/logger";
 
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
 
     // Invalidate cache so the admin page shows fresh data
     try {
-      await redis.del(CACHE_KEYS.ALL_FEEDBACK);
+      await cache.del(CACHE_KEYS.ALL_FEEDBACK);
       log.info("Cache invalidated");
     } catch (cacheErr) {
       // Cache invalidation failure is not fatal — the cache will expire on its own
@@ -61,15 +61,15 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET /api/feedback — List all feedback (with Redis caching)
+// GET /api/feedback — List all feedback (with caching)
 export async function GET() {
   const requestId = crypto.randomUUID();
   const log = logger.child({ requestId, method: "GET", path: "/api/feedback" });
 
   try {
-    // Try Redis cache first
+    // Try cache first
     try {
-      const cached = await redis.get(CACHE_KEYS.ALL_FEEDBACK);
+      const cached = await cache.get(CACHE_KEYS.ALL_FEEDBACK);
       if (cached) {
         log.info("Cache hit");
         const data = JSON.parse(cached);
@@ -82,7 +82,7 @@ export async function GET() {
         );
       }
     } catch (cacheErr) {
-      log.warn({ err: cacheErr }, "Redis read failed, falling back to database");
+      log.warn({ err: cacheErr }, "Cache read failed, falling back to database");
     }
 
     // Cache miss — query database
@@ -93,10 +93,10 @@ export async function GET() {
 
     // Store in cache
     try {
-      await redis.setex(
+      await cache.set(
         CACHE_KEYS.ALL_FEEDBACK,
-        CACHE_TTL,
-        JSON.stringify(feedback)
+        JSON.stringify(feedback),
+        CACHE_TTL
       );
       log.info({ ttl: CACHE_TTL }, "Cache populated");
     } catch (cacheErr) {
