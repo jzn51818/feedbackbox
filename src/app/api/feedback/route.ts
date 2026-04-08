@@ -1,23 +1,28 @@
 // src/app/api/feedback/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { withRequestLogging, RequestContext } from "@/lib/request-logger";
+import logger from "@/lib/logger";
 import { db } from "@/lib/db";
 import { cache, CACHE_KEYS, CACHE_TTL } from "@/lib/redis";
 import { feedbackSchema } from "@/lib/validation";
-import { logger } from "@/lib/logger";
 
-// POST /api/feedback — Submit new feedback
-export async function POST(request: NextRequest) {
-  const requestId = crypto.randomUUID();
-  const log = logger.child({ requestId, method: "POST", path: "/api/feedback" });
-
-  try {
-    const body = await request.json();
+// ---- POST /api/feedback ----
+export const POST = withRequestLogging(
+  async (req: NextRequest, ctx: RequestContext) => {
+    const body = await req.json();
 
     // Validate input
     const parsed = feedbackSchema.safeParse(body);
     if (!parsed.success) {
       const errors = parsed.error.flatten().fieldErrors;
-      log.warn({ errors }, "Validation failed");
+      logger.warn(
+        {
+          event: "feedback_validation_failed",
+          request_id: ctx.requestId,
+          errors,
+        },
+        "Feedback validation failed"
+      );
       return NextResponse.json(
         { error: "Validation failed", details: errors },
         { status: 400 }
@@ -34,59 +39,89 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    log.info({ feedbackId: feedback.id }, "Feedback created");
+    logger.info(
+      {
+        event: "feedback_created",
+        request_id: ctx.requestId,
+        feedback_id: feedback.id,
+        category: feedback.category,
+      },
+      `Feedback created: ${feedback.id}`
+    );
 
     // Invalidate cache so the admin page shows fresh data
     try {
       await cache.del(CACHE_KEYS.ALL_FEEDBACK);
-      log.info("Cache invalidated");
+      logger.debug(
+        {
+          event: "cache_invalidated",
+          request_id: ctx.requestId,
+          key: CACHE_KEYS.ALL_FEEDBACK,
+        },
+        `Cache invalidated: ${CACHE_KEYS.ALL_FEEDBACK}`
+      );
     } catch (cacheErr) {
-      // Cache invalidation failure is not fatal — the cache will expire on its own
-      log.warn({ err: cacheErr }, "Failed to invalidate cache");
+      logger.warn(
+        {
+          event: "cache_invalidation_failed",
+          request_id: ctx.requestId,
+          key: CACHE_KEYS.ALL_FEEDBACK,
+          error: cacheErr instanceof Error ? cacheErr.message : String(cacheErr),
+        },
+        "Failed to invalidate cache"
+      );
     }
 
     return NextResponse.json(
-      {
-        message: "Feedback submitted successfully",
-        id: feedback.id,
-      },
+      { message: "Feedback submitted successfully", id: feedback.id },
       { status: 201 }
     );
-  } catch (err) {
-    log.error({ err }, "Failed to create feedback");
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
   }
-}
+);
 
-// GET /api/feedback — List all feedback (with caching)
-export async function GET() {
-  const requestId = crypto.randomUUID();
-  const log = logger.child({ requestId, method: "GET", path: "/api/feedback" });
-
-  try {
-    // Try cache first
+// ---- GET /api/feedback ----
+export const GET = withRequestLogging(
+  async (req: NextRequest, ctx: RequestContext) => {
+    // Check cache
     try {
       const cached = await cache.get(CACHE_KEYS.ALL_FEEDBACK);
       if (cached) {
-        log.info("Cache hit");
+        logger.info(
+          {
+            event: "cache_hit",
+            request_id: ctx.requestId,
+            key: CACHE_KEYS.ALL_FEEDBACK,
+          },
+          `Cache hit: ${CACHE_KEYS.ALL_FEEDBACK}`
+        );
         const data = JSON.parse(cached);
         return NextResponse.json(
           { data, meta: { cacheHit: true, count: data.length } },
-          {
-            status: 200,
-            headers: { "X-Cache": "HIT" },
-          }
+          { status: 200, headers: { "X-Cache": "HIT" } }
         );
       }
     } catch (cacheErr) {
-      log.warn({ err: cacheErr }, "Cache read failed, falling back to database");
+      logger.warn(
+        {
+          event: "cache_read_failed",
+          request_id: ctx.requestId,
+          key: CACHE_KEYS.ALL_FEEDBACK,
+          error: cacheErr instanceof Error ? cacheErr.message : String(cacheErr),
+        },
+        "Cache read failed, falling back to database"
+      );
     }
 
     // Cache miss — query database
-    log.info("Cache miss, querying database");
+    logger.info(
+      {
+        event: "cache_miss",
+        request_id: ctx.requestId,
+        key: CACHE_KEYS.ALL_FEEDBACK,
+      },
+      `Cache miss: ${CACHE_KEYS.ALL_FEEDBACK}`
+    );
+
     const feedback = await db.feedback.findMany({
       orderBy: { createdAt: "desc" },
     });
@@ -98,23 +133,30 @@ export async function GET() {
         JSON.stringify(feedback),
         CACHE_TTL
       );
-      log.info({ ttl: CACHE_TTL }, "Cache populated");
+      logger.debug(
+        {
+          event: "cache_populated",
+          request_id: ctx.requestId,
+          key: CACHE_KEYS.ALL_FEEDBACK,
+          ttl: CACHE_TTL,
+        },
+        `Cache populated: ${CACHE_KEYS.ALL_FEEDBACK}`
+      );
     } catch (cacheErr) {
-      log.warn({ err: cacheErr }, "Failed to populate cache");
+      logger.warn(
+        {
+          event: "cache_write_failed",
+          request_id: ctx.requestId,
+          key: CACHE_KEYS.ALL_FEEDBACK,
+          error: cacheErr instanceof Error ? cacheErr.message : String(cacheErr),
+        },
+        "Failed to populate cache"
+      );
     }
 
     return NextResponse.json(
       { data: feedback, meta: { cacheHit: false, count: feedback.length } },
-      {
-        status: 200,
-        headers: { "X-Cache": "MISS" },
-      }
-    );
-  } catch (err) {
-    log.error({ err }, "Failed to fetch feedback");
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
+      { status: 200, headers: { "X-Cache": "MISS" } }
     );
   }
-}
+);

@@ -1,5 +1,5 @@
 // src/lib/redis.ts
-import { logger } from "./logger";
+import logger from "./logger";
 
 // Cache interface — same API whether backed by Redis or in-memory Map
 interface CacheStore {
